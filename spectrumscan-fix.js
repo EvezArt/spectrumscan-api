@@ -1,6 +1,6 @@
-// spectrumscan-fix.js
+// spectrumscan-fix.js — ESM
 // Fixes: 546ms avg latency, 2.95% error rate, bad training data
-// Usage: import { makeScanHandler } from './spectrumscan-fix.js';
+// Updated: column names match evezstation.training_pairs schema
 
 import https from 'https';
 import http from 'http';
@@ -16,12 +16,10 @@ export const validateUrl = (raw) => {
     const u = new URL(raw);
     if (!['http:', 'https:'].includes(u.protocol)) return { ok: false, reason: 'Only http/https allowed' };
     return { ok: true, url: u.href };
-  } catch {
-    return { ok: false, reason: 'Invalid URL format' };
-  }
+  } catch { return { ok: false, reason: 'Invalid URL format' }; }
 };
 
-const fetchHeaders = (targetUrl) =>
+export const fetchHeaders = (targetUrl) =>
   new Promise((resolve, reject) => {
     const u = new URL(targetUrl);
     const lib = u.protocol === 'https:' ? https : http;
@@ -67,16 +65,19 @@ export const scoreForTraining = ({ latencyMs, grade, errorCode }) => {
   return Math.max(0, (gradeScore[grade] || 0.5) - latencyPenalty);
 };
 
-const logTrainingPair = async (supabase, { input, output, quality, source }) => {
-  if (!supabase) return;
-  if (quality < MIN_QUALITY) return;
+const logTrainingPair = async (supabase, { input, output, quality }) => {
+  if (!supabase || quality < MIN_QUALITY) return;
   try {
     await supabase.schema('evezstation').from('training_pairs').insert({
-      input: JSON.stringify(input),
-      output: JSON.stringify(output),
+      service:       'spectrumscan',
+      endpoint:      '/scan',
+      input_data:    input,
+      output_data:   output,
       quality_score: quality,
-      source: source || 'spectrumscan',
-      created_at: new Date().toISOString()
+      latency_ms:    output.latencyMs || 0,
+      tokens_in:     JSON.stringify(input).length,
+      tokens_out:    JSON.stringify(output).length,
+      created_at:    new Date().toISOString()
     });
   } catch (err) {
     console.warn('[EVEZ TRAINING LOG]', err?.message);
@@ -94,7 +95,7 @@ export const makeScanHandler = (supabase) => async (req, res) => {
     const { score, grade, results } = gradeHeaders(headers);
     const output = { url: validation.url, statusCode, grade, score, latencyMs, headers: results, scannedAt: new Date().toISOString() };
     const quality = scoreForTraining({ latencyMs, grade });
-    await logTrainingPair(supabase, { input: { url: validation.url }, output, quality, source: 'spectrumscan' });
+    await logTrainingPair(supabase, { input: { url: validation.url }, output, quality });
     return res.json({ ok: true, ...output, totalMs: Date.now() - start });
   } catch (err) {
     const isTimeout = err.code === 'TIMEOUT';
